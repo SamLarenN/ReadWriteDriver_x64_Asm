@@ -28,7 +28,7 @@ CTL_CODE ModuleReq, FILE_DEVICE_UNKNOWN, 0x703, 0, 0
 
 
 virtual at 0
-DriverObject	DRIVER_OBJECT
+DriverObject	DRIVER_OBJECT	    ; Create a virtual DRIVER_OBJECT struct with 0 as base
 end virtual
 
 virtual at 0
@@ -53,20 +53,20 @@ DriverEntry:
 	push	rbx
 	push	rsi
 	push	rdi
-	sub	rsp, 8*(4+8)
-	mov	rbx, rcx	; RBX = pDriverObject
+	sub	rsp, 8*(4+8)	; 12 local qwords on stack
+	mov	rbx, rcx	; RBX = pDriverObject (RBX is not changed during API calls)
 	invoke	DbgPrintEx, 77, 0, strout, loaded
 
 	mov	rax, DriverUnload
-	mov	[rbx + DriverObject.DriverUnload], rax
+	mov	[rbx + DriverObject.DriverUnload], rax	  ; [pDriverObject + DriverUnload] = DriverUnload
 	mov	rax, DispatchCreate
-	mov	[rbx + DriverObject.MajorFunction + IRP_MJ_CREATE_OFFSET], rax
+	mov	[rbx + DriverObject.MajorFunction + IRP_MJ_CREATE_OFFSET], rax	 ; Set DispatchCreate
 	mov	rax, DispatchClose
-	mov	[rbx + DriverObject.MajorFunction + IRP_MJ_CLOSE_OFFSET], rax
+	mov	[rbx + DriverObject.MajorFunction + IRP_MJ_CLOSE_OFFSET], rax	 ; Set DispatchClose
 	mov	rax, IOCTL
-	mov	[rbx + DriverObject.MajorFunction + IRP_MJ_DEVICE_CONTROL_OFFSET], rax
+	mov	[rbx + DriverObject.MajorFunction + IRP_MJ_DEVICE_CONTROL_OFFSET], rax	 ; Set IOCTL function.
 	mov	rax, ImageLoadCallback
-	invoke	PsSetLoadImageNotifyRoutine, rax
+	invoke	PsSetLoadImageNotifyRoutine, rax	; Set LoadImageNotifyRoutine
 
 	lea	rdi, [rsp + 8*(4+6)]	     ; [rsp + 8*(4+6)] = (UNICODE_STRING*)strDriverName
 	lea	rsi, [strDriverName]
@@ -77,16 +77,16 @@ DriverEntry:
 	invoke	RtlInitUnicodeString, rdi, rsi
 
 	lea	rsi, [rsp + 8*(4+6)]	     ; (UNICODE_STRING*)strDriverName
-	lea	rdi, [rsp + 8*(4+2)]	     ; (VOID*)(QWORD)
-	invoke	IoCreateDevice, rbx, 0, rsi, 22h, 100h, FALSE, rdi
+	lea	rdi, [rsp + 8*(4+2)]	     ; (QWORD*)
+	invoke	IoCreateDevice, rbx, 0, rsi, 22h, 100h, FALSE, rdi     ; Create IoDevice, pointer in rdi.
 	test	eax, eax
 	jnz	@ReturnLoader		   ; If it fails, return the error code in EAX.
 
-	lea	rsi, [rsp + 8*(4+2)]	   ; pDeviceObject
-	or	dword[rsi + 30h], 10h	   ; pDeviceObject->Flags
+	lea	rsi, [rsp + 8*(4+2)]	   ; pDeviceObject	 (Get pointer to DeviceObject)
+	or	dword[rsi + 30h], 10h	   ; pDeviceObject->Flags   (Set flags for I/O)
 	mov	eax, 80h
 	not	eax
-	and	dword[rsi + 30h], eax
+	and	dword[rsi + 30h], eax				   ;(Set flags for I/O)
 
 	lea	rsi, [rsp + 8*(4+4)]	     ; strSymbolic
 	lea	rdi, [rsp + 8*(4+6)]	     ; strDriverName
@@ -111,7 +111,7 @@ DriverUnload:
 	invoke	DbgPrintEx, 77, 0, strout, unloaded
 
 	mov	rax, ImageLoadCallback
-	invoke	PsRemoveLoadImageNotifyRoutine, rax
+	invoke	PsRemoveLoadImageNotifyRoutine, rax	 ; Important to remove ImageNotifyRoutine to avoid BSOD
 
 	lea	rdi, [rsp + 8*(2+2)]
 	mov	rsi, strSymbolic
@@ -128,7 +128,7 @@ DriverUnload:
 	pop	rbx
 	ret
 
-
+; Function to handle Input/Output Control.
 align 10h
 IOCTL:
 ; RCX = pDeviceObject
@@ -165,11 +165,11 @@ IOCTL:
 
 @1:
 	mov	eax, [rsi + iosl.Parameters.DeviceIoControl.IoControlCode]    ; EAX = ControlCode
-	cmp	eax, ReadReq
+	cmp	eax, ReadReq	    ; Check for ReadRequest
 	je	@2
-	cmp	eax, WriteReq
+	cmp	eax, WriteReq	    ; Check for WriteRequest
 	je	@2
-	cmp	eax, ModuleReq
+	cmp	eax, ModuleReq	    ; Check for ModuleRequest
 	je	@@2
 
 	; If it is bad control code:
@@ -181,11 +181,11 @@ IOCTL:
 
 
 @2:
-	mov	rdi, [rbx + pIRP.AssociatedIrp.SystemBuffer]		; Get input buffer in RDI
+	mov	rdi, [rbx + pIRP.AssociatedIrp.SystemBuffer]		; Get input buffer (struct from usermode) in RDI
 
 	mov	eax, dword[rdi + 8]	; DWORD processid
 	lea	rdx, [rsp]
-	invoke	PsLookupProcessByProcessId, eax, rdx	 ; [rsp] = PEPROCESS*
+	invoke	PsLookupProcessByProcessId, eax, rdx	 ; [rsp] = PEPROCESS*	(Get EPROCESS struct of process)
 	test	eax, eax
 	jz	@3
 
@@ -244,10 +244,10 @@ IOCTL:
 
 
 	mov	rdx, [rsp]				; [rsp] = PEPROCESS*
-	invoke	ObDereferenceObject, rdx		; rdx = PEPROCESS
+	invoke	ObDereferenceObject, rdx		; rdx = PEPROCESS  (Dereference EPROCESS struct)
 
 
-	mov	[rbx + pIRP.AssociatedIrp.SystemBuffer], rdi	  ; Set pointer to output buffer.
+	mov	[rbx + pIRP.AssociatedIrp.SystemBuffer], rdi	  ; Update output buffer (structure sent to usermode)
 
 
 	mov	dword[rbx + pIRP.IoStatus.Status], STATUS_SUCCESS
@@ -335,7 +335,17 @@ KernelRead:
 	ret
 
 
+; Function which automatically executes when a new module is loaded.
+; Parameters are:
+;  _In_opt_ PUNICODE_STRING FullImageName,
+;  _In_     HANDLE	    ProcessId,
+;  _In_     PIMAGE_INFO     ImageInfo,
+;  _In_     BOOLEAN	    Create
 
+; This function compares all FullImageName.
+;      If correct Image is found:
+;	  Save ImageBase from IMAGE_INFO struct
+;	  Save ProcessId
 align 10h
 ImageLoadCallback:
 
@@ -348,27 +358,27 @@ ImageLoadCallback:
 	push	rdi
 	sub	rsp, 8*4
 	mov	rbx, rcx
-	mov	[rsp + 8*2], rdx
-	mov	[rsp + 8*3], r8
+	mov	[rsp + 8*2], rdx      ; Save pointer to ProcessId on stack
+	mov	[rsp + 8*3], r8       ; Save pointer to IMAGE_INFO on stack
 
 	;invoke  DbgPrintEx, 77, 0, wstrout, rbx
 	mov	rsi, modPath
 	lea	rdi, [rsp]
-	invoke	RtlInitUnicodeString, rdi, rsi
+	invoke	RtlInitUnicodeString, rdi, rsi	   ; WSTR* -> PUNICODE_STRING
 
 	lea	rsi, [rsp]
 	;invoke  DbgPrintEx, 77, 0, wstrout, rsi
 
 	lea	rsi, [rsp]
-	invoke	RtlCompareUnicodeString, rbx, rsi, 0
+	invoke	RtlCompareUnicodeString, rbx, rsi, 0   ; Compare FullImageName with modPath
 	test	eax, eax
 	jnz	@@@1
 
 	mov	rsi, [rsp + 8*2]
-	mov	[pId], rsi
+	mov	[pId], rsi		  ; Save ProcessId
 	mov	rsi, [rsp + 8*3]
-	mov	rsi, [rsi + 4*2]
-	mov	[moduleBase], rsi
+	mov	rsi, [rsi + 4*2]	  ; Get ImageBase (second element in struct) of 32bit IMAGE_INFO struct (4*2)
+	mov	[moduleBase], rsi	  ; Save ImageBase
 
 @@@1:
 	add	rsp, 8*4
